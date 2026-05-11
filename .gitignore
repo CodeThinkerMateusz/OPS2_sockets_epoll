@@ -1,0 +1,15 @@
+# Pliki binarne (wynik kompilacji)
+l7-1_server
+l7-1_client_local
+l7-1_client_tcp
+
+# Pliki obiektowe i biblioteki
+*.o
+*.a
+
+# Pliki tymczasowe edytorów
+*~
+.swp
+
+# Socket lokalny (jeśli stworzysz go w folderze projektu)
+moj_socket
