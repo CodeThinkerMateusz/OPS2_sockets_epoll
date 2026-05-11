@@ -1,0 +1,12 @@
+Serwer: 
+    - sygnaly obsluga 
+    - bind 
+    - petla
+    - sprzatanie 
+
+Klient: 
+    - connect 
+    - wyslij 
+    - odbierz 
+    - wyswietl 
+    
