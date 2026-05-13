@@ -24,7 +24,7 @@ void usage(char *name)
 #define BACKLOG 10
 #define MAX_EVENTS 10
 
-void server_work(int local_listen_socket){
+void server_work(int local_listen_socket, int timeout){
     int epoll_descriptor;
     if ((epoll_descriptor = epoll_create1(0)) < 0)
     {
@@ -42,21 +42,27 @@ void server_work(int local_listen_socket){
     int nfds;
     int size;
     while(1){
-        if ((nfds = epoll_pwait(epoll_descriptor, events, MAX_EVENTS, -1, NULL)) > 0)
+        if ((nfds = epoll_pwait(epoll_descriptor, events, MAX_EVENTS, timeout , NULL)) > 0)
         {
             for (int n = 0; n < nfds; n++)
             {
                 int client = add_new_client(events[n].data.fd);
                 // uzywamy printf bo bulkwrite jest do wysyłania danych do klienta przez socket 
                 // a tu wypisujemy na standardowe  wyjscie 
-                printf("Another young person (%d) needs my help!", client); 
-
-
-
-
-
-
+                printf("Another young person (%d) needs my help!\n", client); 
+                fflush(stdout);
+                close(client);
             }
+        }
+        else{
+            printf("No one needs my help anymore!\n");
+            if (TEMP_FAILURE_RETRY(close(local_listen_socket)) < 0)   // najpierw zamykamy socket potem unlink
+                ERR("close");
+            // tu jest  unlink bo to UNIX fizycznie  tworzy plik 
+            unlink(UNIX_SK_NAME);
+            if (TEMP_FAILURE_RETRY(close(epoll_descriptor)) < 0)
+                ERR("close");
+            break;
         }
     }
 
@@ -72,7 +78,7 @@ int main(int argc, char **argv)
         exit(EXIT_FAILURE);
     }
 
-    int timeout = atoi(argv[1]);
+    int timeout = atoi(argv[1]) * 1000;
     if (timeout < 1)
     {
         usage(argv[0]);
@@ -82,8 +88,9 @@ int main(int argc, char **argv)
     sethandler(SIG_IGN, SIGPIPE);
     int local_listen_conn;
     local_listen_conn = bind_local_socket(UNIX_SK_NAME, BACKLOG);
-    server_work(local_listen_socket);
+    server_work(local_listen_conn, timeout);
 
+    
 
     return EXIT_SUCCESS;
 }
