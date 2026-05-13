@@ -2,6 +2,10 @@
 #define BACKLOG 10
 #define MAX_EVENTS 100
 
+volatile sig_atomic_t do_work = 1;
+
+void sigint_handler(int sig) { do_work = 0; }
+
 void usage(char* name)
 {
     fprintf(stderr, "USAGE: %s port\n", name);
@@ -16,6 +20,7 @@ void server_work(int local_tcp_conn){
         ERR("epoll_create:");
     }
     struct epoll_event event, events[MAX_EVENTS];
+    int elecotr_state[1024] = {0}; // jesli 0 to niezidentyfikowany 
     event.events = EPOLLIN;
 
     event.data.fd = local_tcp_conn;
@@ -26,26 +31,61 @@ void server_work(int local_tcp_conn){
     }
 
     int nfds;
-    ssize_t size;
+    ssize_t size = 0;
     char buffer[1024];
-    while(1){
+    char el_num[1];
+    int number;
+    char vote[1];
+    int real_vote[1024] = {0};       // indeksujemy po fd a to system nam przydzila  
+    int connected_electors[8] = {0};  // polaczeni po indexach 
+    while(do_work){
         if ((nfds = epoll_pwait(epoll_descriptor, events, MAX_EVENTS, -1, NULL)) > 0)
         {
             for (int n = 0; n < nfds; n++)
             {
                 int client;
                 if(events[n].data.fd == local_tcp_conn){
-                    client = add_new_client(events[n].data.fd);
-                    bulk_write(client, "Welcome, elector!\n", 18);  
+                    client = add_new_client(events[n].data.fd); 
                     event.data.fd = client;
                     epoll_ctl(epoll_descriptor, EPOLL_CTL_ADD, client, &event);
-                } else {
-                    size = bulk_read(events[n].data.fd, buffer, sizeof(buffer));
-                    printf("%s\n", buffer);
-                    if(size == 0){
-                        epoll_ctl(epoll_descriptor, EPOLL_CTL_DEL, events[n].data.fd, &event);
-                        close(events[n].data.fd);
+                    
+
+                } else {  // klient  cos wyslal trzeba  sprawdzic co 
+                    if(elecotr_state[events[n].data.fd] == 0) {  // czytaj identyfikacje
+                        number = bulk_read(events[n].data.fd, el_num, sizeof(el_num));
+                        if(el_num[0] == '\n' || el_num[0] == '\r') continue;    // zeby nie  rozlaczalo sie bo tablica 1 bajt 
+                        elecotr_state[events[n].data.fd] = el_num[0] - '0';
+                        if(elecotr_state[events[n].data.fd] <1 || elecotr_state[events[n].data.fd] > 7){
+                            epoll_ctl(epoll_descriptor, EPOLL_CTL_DEL, events[n].data.fd, &event);
+                            close(events[n].data.fd);
+                            continue;
+                        }
+                        if(connected_electors[elecotr_state[events[n].data.fd]] == 1){
+                            epoll_ctl(epoll_descriptor, EPOLL_CTL_DEL, events[n].data.fd, &event);
+                            close(events[n].data.fd);
+                            continue;
+                        }
+                        printf("Welcome, elector of %d! \n", elecotr_state[events[n].data.fd]); 
+                        fflush(stdout); 
+                        connected_electors[elecotr_state[events[n].data.fd]] = 1;
+
+                    }else { // czytaj glos 
+                        size = bulk_read(events[n].data.fd, vote, sizeof(vote));
+                        if(size == 0){    // rozlacznie bo bulk read zwraca 0 
+                            // czyszczenie zeby elektor mog wejsc ponownie 
+                            connected_electors[elecotr_state[events[n].data.fd]] = 0;   
+                            elecotr_state[events[n].data.fd] = 0;
+
+                            // zamykanie połaczenia 
+                            epoll_ctl(epoll_descriptor, EPOLL_CTL_DEL, events[n].data.fd, &event);
+                            close(events[n].data.fd);
+                        }
+                        if(vote[0] == '\n' || vote[0] == '\r') continue;  // zeby nie  rozlaczalo sie bo tablica 1 bajt 
+
+                        if(vote[0] >= '1' || vote[0] <= '3')
+                            real_vote[events[n].data.fd] = vote[0] - '0';
                     }
+                    
                 }
             }
         }
@@ -57,11 +97,14 @@ void server_work(int local_tcp_conn){
         }
     }
 
+    // calculating votes  
+    int canditates[4];
+    for(int i = 0; i < 1024;i++){
+        if(real_vote[i] >= 1 && real_vote[i] <=3)
+            canditates[real_vote[i]]++;
+    }
+    printf("\t1. Francis I, King of France got: %d \n\t2. Charles V, Archduke of Austria and King of Spain got: %d\n\t3. Henry VIII, King of England got: %d \n", canditates[1] , canditates[2], canditates[3]);
 
-    // int client = add_new_client(local_tcp_conn);
-    // printf("conn established \n");
-    // close(client);
-    // close(local_tcp_conn);
 }
 
 int main(int argc, char **argv){
@@ -69,6 +112,11 @@ int main(int argc, char **argv){
         usage(argv[0]);
         return EXIT_FAILURE;
     }
+
+    if (sethandler(SIG_IGN, SIGPIPE))
+        ERR("Seting SIGPIPE:");
+    if (sethandler(sigint_handler, SIGINT))
+        ERR("Seting SIGINT:");
 
     int local_tcp_conn;
     //int flags;
