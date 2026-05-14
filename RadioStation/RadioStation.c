@@ -18,9 +18,16 @@ void usage(char *name)
 
 
 #define BACKLOG 10
+#define MAX_CLIENTS 10
 #define MAX_EVENTS 10
 #define MAX_MSG_LEN 63
 #define UNIX_SK_NAME "RadioStation"
+
+typedef struct{
+    int fd;
+    char nick[MAX_MSG_LEN +1];
+    int has_nick; // 0 doesnt have nick 1 has  nick 
+}Client;
 
 int read_line(int fd, char *buf, int max) {
     int i = 0, n;
@@ -39,8 +46,15 @@ int read_line(int fd, char *buf, int max) {
     return i;
 }
 
-
-
+// odwraca stringi 
+void reverse_string(char *str) {
+    int len = strlen(str);
+    for (int i = 0; i < len / 2; i++) {
+        char tmp = str[i];
+        str[i] = str[len - 1 - i];
+        str[len - 1 - i] = tmp;
+    }
+}
 
 void server_work(int local_listen, int listeners_count){
     int epoll_descriptor;
@@ -57,48 +71,167 @@ void server_work(int local_listen, int listeners_count){
         exit(EXIT_FAILURE);
     }
 
+    // stdin dodajemy raz przed petla zeby operator mogl wysylac wiadomosci
+    struct epoll_event stdin_ev;
+    stdin_ev.events = EPOLLIN;
+    stdin_ev.data.fd = 0;
+    epoll_ctl(epoll_descriptor, EPOLL_CTL_ADD, 0, &stdin_ev);
+
     int nfds;
     int number = 0;
     int done = 0;
     int size;
-    char message[MAX_MSG_LEN +1];
+    char message[MAX_MSG_LEN + 1];
+    Client clients[MAX_CLIENTS];
+    for(int i = 0; i < MAX_CLIENTS; i++){
+        clients[i].fd = -1;
+    }
+
     while(!done){
         if ((nfds = epoll_pwait(epoll_descriptor, events, MAX_EVENTS, -1, NULL)) > 0){
-            for(int n = 0; n < nfds ; n++){
+            for(int n = 0; n < nfds; n++){
+
                 if(events[n].data.fd == local_listen){
-                    int client = add_new_client(events[n].data.fd);
+                    int client = add_new_client(local_listen);
                     number++;
 
-                    char msg[] = "Welcome to Radio Free Verona! \n";
+                    char msg[] = "Welcome to Radio Free Verona!\nEnter your callsign:\n";
                     bulk_write(client, msg, strlen(msg));
+                    printf("New listener connected (fd=%d)\n", client);
+                    fflush(stdout);
 
-                    printf("New listener connected (fd=%d) \n", client);
                     if(number >= listeners_count){
                         close(client);
                         done = 1;
-                        printf("Radio going off the air! \n");
+                        printf("Radio going off the air!\n");
+                        fflush(stdout);
                         break;
                     }
 
-                    // dodawanie  bo inaczej epoll nie bedzie wiedzial ze ma sluchac na fd 
-                    // i epoll nie  bedzie zglaszal zdarzen jak klient cos  wysle 
-                    // zawsze jak mamy else to bedzimey mieli to 
-                    struct epoll_event ev;
-                    ev.events = EPOLLIN;
-                    ev.data.fd = client;
-                    epoll_ctl(epoll_descriptor, EPOLL_CTL_ADD, client, &ev);
+                    for(int i = 0; i < MAX_CLIENTS; i++){
+                        if(clients[i].fd == -1){
+                            clients[i].fd = client;
+                            clients[i].has_nick = 0;
+                            memset(clients[i].nick, 0, sizeof(clients[i].nick));
 
-                }
-                // events[n].data.fd musi byc  fd  klienta bo jest to else z sprawdzajace local_listen 
-                else{ // tu bedzie  logika jak wysle cos  
-                    int clinet_fd = events[n].data.fd;
-                    size = read_line(clinet_fd, message, sizeof(message));
-                    printf("%d transmitted: %s \n",clinet_fd , message);
+                            // dodawanie bo inaczej epoll nie bedzie wiedzial ze ma sluchac na fd
+                            // i epoll nie bedzie zglaszal zdarzen jak klient cos wysle
+                            // zawsze jak mamy else to bedziemy mieli to
+                            struct epoll_event ev;
+                            ev.events = EPOLLIN;
+                            ev.data.fd = client;
+                            epoll_ctl(epoll_descriptor, EPOLL_CTL_ADD, client, &ev);
+                            break;
+                        }
+                    }
 
-                    if(size == 0){
-                        printf("Listener (%d) disconnected \n", clinet_fd);
-                        epoll_ctl(epoll_descriptor, EPOLL_CTL_DEL, clinet_fd ,  NULL);
-                        close(clinet_fd);
+                } else if(events[n].data.fd == 0){
+                    char stdin_msg[MAX_MSG_LEN + 1];
+                    size = read_line(0, stdin_msg, sizeof(stdin_msg));
+                    if(size == 0) break;
+
+                    if(strncmp(stdin_msg, "!air:", 5) == 0){
+                        // broadcast do wszystkich
+                        char broadcast[MAX_MSG_LEN + 1];
+                        snprintf(broadcast, sizeof(broadcast), "[STUDIO BROADCAST]: %s\n", stdin_msg + 5);
+                        for(int k = 0; k < MAX_CLIENTS; k++){
+                            if(clients[k].fd != -1 && clients[k].has_nick == 1)
+                                bulk_write(clients[k].fd, broadcast, strlen(broadcast));
+                        }
+                    } else {
+                        // szukaj :
+                        char *colon = strchr(stdin_msg, ':');
+                        if(colon == NULL){
+                            printf("Error: invalid format\n");
+                            fflush(stdout);
+                        } else {
+                            *colon = '\0';
+                            char *callsign = stdin_msg;
+                            char *text = colon + 1;
+                            int found = 0;
+                            for(int k = 0; k < MAX_CLIENTS; k++){
+                                if(clients[k].fd != -1 && clients[k].has_nick == 1
+                                   && strcmp(clients[k].nick, callsign) == 0){
+                                    char msg[MAX_MSG_LEN + 1];
+                                    snprintf(msg, sizeof(msg), "[STUDIO]: %s\n", text);
+                                    bulk_write(clients[k].fd, msg, strlen(msg));
+                                    found = 1;
+                                    break;
+                                }
+                            }
+                            if(!found) printf("Error: unknown callsign '%s'\n", callsign);
+                            fflush(stdout);
+                        }
+                    }
+
+                // events[n].data.fd musi byc fd klienta bo jest to else sprawdzajace local_listen
+                } else {
+                    int client_fd = events[n].data.fd;
+                    for(int i = 0; i < MAX_CLIENTS; i++){
+                        // sprawdzamy ktory z nich to on
+                        if(clients[i].fd == client_fd){
+                            if(clients[i].has_nick == 0){
+                                // czy juz ma nick
+                                size = read_line(client_fd, message, sizeof(message));
+                                if(size == 0){
+                                    printf("Anonymous listener dropped off.\n");
+                                    fflush(stdout);
+                                    epoll_ctl(epoll_descriptor, EPOLL_CTL_DEL, client_fd, NULL);
+                                    close(client_fd);
+                                    // musimy sie rozlaczyc zeby nie zabierac miejsca
+                                    clients[i].fd = -1;
+                                    break;
+                                }
+                                // sprawdzenie czy nick jest dostepny
+                                int taken = 0;
+                                for(int k = 0; k < MAX_CLIENTS; k++){
+                                    if(clients[k].fd != -1 && clients[k].has_nick == 1
+                                       && strcmp(clients[k].nick, message) == 0){
+                                        taken = 1;
+                                        break;
+                                    }
+                                }
+                                // jesli zajety to go rozlaczamy bez przywitania
+                                if(taken){
+                                    epoll_ctl(epoll_descriptor, EPOLL_CTL_DEL, client_fd, NULL);
+                                    close(client_fd);
+                                    clients[i].fd = -1;
+                                    break;
+                                }
+                                // kopiujemy jego nick
+                                strcpy(clients[i].nick, message);
+                                clients[i].has_nick = 1;
+                                // witamy go
+                                char welcome[MAX_MSG_LEN + 1];
+                                snprintf(welcome, sizeof(welcome), "You are on air, %s!\n", clients[i].nick);
+                                bulk_write(client_fd, welcome, strlen(welcome));
+                                printf("You are on air, %s!\n", clients[i].nick);
+                                fflush(stdout);
+
+                            } else {
+                                // tu piszemy inne jego wiadomosci i broadcastujemy
+                                size = read_line(client_fd, message, sizeof(message));
+                                if(size == 0){
+                                    printf("Listener %s disconnected\n", clients[i].nick);
+                                    fflush(stdout);
+                                    epoll_ctl(epoll_descriptor, EPOLL_CTL_DEL, client_fd, NULL);
+                                    close(client_fd);
+                                    clients[i].fd = -1;
+                                    break;
+                                }
+                                for(int j = 0; j < MAX_CLIENTS; j++){
+                                    if(j != i && clients[j].fd != -1 && clients[j].has_nick == 1){
+                                        char rev_mess[MAX_MSG_LEN + 1];
+                                        char broadcast[MAX_MSG_LEN + 1];
+                                        strcpy(rev_mess, message);
+                                        reverse_string(rev_mess);
+                                        snprintf(broadcast, sizeof(broadcast), "%s broadcasts: %s\n", clients[i].nick, rev_mess);
+                                        bulk_write(clients[j].fd, broadcast, strlen(broadcast));
+                                    }
+                                }
+                            }
+                            break;
+                        }
                     }
                 }
             }
@@ -108,12 +241,6 @@ void server_work(int local_listen, int listeners_count){
     unlink(UNIX_SK_NAME);
     close(epoll_descriptor);
 }
-
-
-
-
-
-
 
 
 int main(int argc, char **argv)
