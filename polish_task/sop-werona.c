@@ -53,6 +53,7 @@ int read_line(int fd, char *buf, int max) {
 
 
 void server_work(int local_listen_socket, int timeout){
+    // tworzymy deskryptor zeby serwer wiedzial kiedy wiedzial gdy ktos sie  laczy 
     int epoll_descriptor;
     if ((epoll_descriptor = epoll_create1(0)) < 0)
     {
@@ -81,12 +82,13 @@ void server_work(int local_listen_socket, int timeout){
                 int client;
                 if(events[n].data.fd == local_listen_socket){
                     client = add_new_client(local_listen_socket);
-                    //
+                    // unika zawieszaniu systemu i koncu programu 
                     fcntl(client, F_SETFL, O_NONBLOCK);
                     printf("Another young person (%d) needs my help!\n", client); 
                     fflush(stdout);
                     for(int i = 0; i < MAX_CLIENTS ;i++){
-                        if(clients[i].fd == -1){  // uzywamy nowej iteracji zeby randomowo nie nadpisac 
+                        if(clients[i].fd == -1){  // uzywamy nowej iteracji zeby randomowo nie nadpisac
+                            //ustawiamy tablice struct  
                             clients[i].fd = client;
                             clients[i].ready = 0;
 
@@ -95,7 +97,8 @@ void server_work(int local_listen_socket, int timeout){
                             memset(clients[i].lover, 0, sizeof(clients[i].lover));
 
                             // musimy nowa  strukture  zeby nie nadpisywac zawartosci 
-                            // a tu dla  kazdego klineta nowa strukture tworzymy 
+                            // a tu dla  kazdego klineta tworzymy nowa strukture 
+                            // bedzimy wiedziec kiedy konkretny klient cos napisze  
                             struct epoll_event ev;
                             ev.events = EPOLLIN;
                             ev.data.fd = client;
@@ -112,108 +115,84 @@ void server_work(int local_listen_socket, int timeout){
                     //szukamy klienta  po fd
                     for(int i = 0 ; i < MAX_CLIENTS;i++){
                         if(clients[i].fd == fd){
-                            break;
-                        if (clients[i].ready == 0) {
-                            int s = read_line(fd, clients[i].name, sizeof(clients[i].name));
-                            if (s > 0) 
-                                clients[i].ready = 1;
-                            else if (s == 0) {
-                                printf("I lost contact with ??\n");
-                                goto cleanup_client;
-                            }
-
-                        }
-                        else if(clients[i].name[0] == '\0'){
-                            size = read_line(fd, clients[i].name, sizeof(clients[i].name));
-                            if(size > 0)
-                                clients[i].ready = 1;
-                            else if(size == 0){
-                                printf("I lost contact with ??\n");
-                                fflush(stdout);
-                                epoll_ctl(epoll_descriptor, EPOLL_CTL_DEL, fd, NULL);
-                                close(fd);
-                                clients[i].fd = -1;
-                                break;
+                            
+                            if (clients[i].ready == 0) {
+                                int s = read_line(fd, clients[i].name, sizeof(clients[i].name));
+                                if (s > 0) 
+                                // odczytalismy imie klienta 
+                                    clients[i].ready = 1;
+                                else if (s == 0) {
+                                    // klient sie rozlaczyl sprztamy 
+                                    printf("I lost contact with ??\n");
+                                    goto cleanup_client;
                                 }
+
                             }
-                            else{
-                                size = read_line(fd, clients[i].lover, sizeof(clients[i].lover));
-                                if(size == 0){
-                                    printf("I lost contact with [%s]\n", clients[i].name);
+                            else if (clients[i].ready == 1) {
+                                // czytamy ukochanka klienta 
+                                int s = read_line(fd, clients[i].lover, sizeof(clients[i].lover));
+                                if (s > 0) {
+                                    clients[i].ready = 2; // gotowi na slub 
+                                    printf("[%s] wants to marry [%s]\n", clients[i].name, clients[i].lover);
                                     fflush(stdout);
 
-                                    epoll_ctl(epoll_descriptor, EPOLL_CTL_DEL, fd, NULL);
-                                    close(fd);
-                                    clients[i].fd = -1;
-                                    break;
-                                }
-                                clients[i].ready = 2;
-                                printf("[%s] wants to marry [%s] \n", clients[i].name, clients[i].lover);
-                                fflush(stdout);
+                                    // szukamy kogos kto jest ready na slub
+                                    // nie jest ta sama osoba 
+                                    // jego imie pasuje do ukochanka a jego ukochanka i 
+                                    // a ukochanka ukochany to nasz klient  
+                                    for (int j = 0; j < MAX_CLIENTS; j++) {
+                                        if (clients[j].fd != -1 && i != j && clients[j].ready == 2) {
+                                            if (strcmp(clients[i].lover, clients[j].name) == 0 &&
+                                                strcmp(clients[j].lover, clients[i].name) == 0) {
+                                                
+                                                // pasuja wiec biara slub 
+                                                printf("%s and %s got married!\n", clients[i].name, clients[j].name);
+                                                fflush(stdout);
 
-                                
-                                
-                                //bulk_write(fd, msg, strlen(msg));
+                                                char msg[2 * MAX_MSG_LEN + 32];
+                                                snprintf(msg, sizeof(msg), "Congratulations %s and %s !\n", clients[i].name, clients[j].name);
+                                                
+                                                // wysylamy do nich gratulacje 
+                                                bulk_write(clients[i].fd, msg, strlen(msg));
+                                                bulk_write(clients[j].fd, msg, strlen(msg));
 
-                                for(int j = 0; j<MAX_CLIENTS;j++){
-                                    // strcmp sprawdza  czy pasuja do siebie 
-                                    if(clients[j].fd != -1 && j != i && clients[j].ready == 2)
-                                        if(strcmp(clients[j].name, clients[i].lover) == 0 && strcmp(clients[i].name, clients[j].lover) == 0){
-                                        
-                                            // after confirming lovers 
-                                            printf(" %s and %s got married!!\n", clients[i].name, clients[i].lover);
-                                            fflush(stdout);
-
-                                            //preparing messgae to bulk write
-                                            char msg[2 * MAX_MSG_LEN +32];
-                                            snprintf(msg, sizeof(msg), "Congratulations %s and %s !\n", clients[i].name, clients[i].lover);
-
-                                            // write to each client 
-                                            bulk_write(clients[j].fd, msg, strlen(msg));
-                                            bulk_write(clients[i].fd, msg, strlen(msg));
-
-                                            // start to disconnect 
+                                                // rozlacznie  obu po slubie 
                                                 epoll_ctl(epoll_descriptor, EPOLL_CTL_DEL, clients[j].fd, NULL);
-                                            epoll_ctl(epoll_descriptor, EPOLL_CTL_DEL, clients[i].fd, NULL);
+                                                close(clients[j].fd);
+                                                clients[j].fd = -1;
 
-                                            close(clients[j].fd);
-                                            close(clients[i].fd);
-
-                                            clients[j].fd = -1;
-                                            clients[i].fd = -1;
-                                            break;
+                                                epoll_ctl(epoll_descriptor, EPOLL_CTL_DEL, clients[i].fd, NULL);
+                                                close(clients[i].fd);
+                                                clients[i].fd = -1;
+                                                break;
+                                            }
+                                        }
                                     }
-                                    
+                                // rozlaczanie  przed  slubem jesli ukochanek sie nie polaczyl 
+                                } else if (s == 0) {
+                                    printf("I lost contact with [%s]\n", clients[i].name);
+                                    goto cleanup_client;
                                 }
-
-                                
                             }
-                        }
-                    }
-                    //close(client);
-                }
-                continue;
+                            // zapobiega przedwczesnemu wejsciu w sekcje cleanup 
+                            continue;
 
-                cleanup_client:
-                fflush(stdout);
-                epoll_ctl(epoll_descriptor, EPOLL_CTL_DEL, fd, NULL);
-                close(fd);
-                clients[i].fd = -1;
+
+                            cleanup_client:
+                            fflush(stdout);
+                            epoll_ctl(epoll_descriptor, EPOLL_CTL_DEL, fd, NULL);
+                            close(fd);
+                            clients[i].fd = -1;
+                        }   
+                    }
+                }    
             }
         }
-        else{
-            printf("No one needs my help anymore!\n");
-            if (TEMP_FAILURE_RETRY(close(local_listen_socket)) < 0)   // najpierw zamykamy socket potem unlink
-                ERR("close");
-            // tu jest  unlink bo to UNIX fizycznie  tworzy plik 
-            unlink(UNIX_SK_NAME);
-            if (TEMP_FAILURE_RETRY(close(epoll_descriptor)) < 0)
-                ERR("close");
-            break;
-        }
     }
-
-
+    // koncowe  sprzatanie  i zamykanie  
+    close(local_listen_socket);
+    unlink(UNIX_SK_NAME);
+    close(epoll_descriptor);
 }
 
 
