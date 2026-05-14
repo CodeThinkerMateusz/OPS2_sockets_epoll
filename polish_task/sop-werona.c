@@ -40,10 +40,10 @@ int read_line(int fd, char *buf, int max) {
     while (i < max - 1) {
         n = TEMP_FAILURE_RETRY(read(fd, &c, 1));
         if (n < 0) {
-            if (errno == EAGAIN || errno == EWOULDBLOCK) return i; // brak danych na razie
+            if (errno == EAGAIN || errno == EWOULDBLOCK) return i; 
             return -1;
         }
-        if (n == 0) return 0; // rozlaczenie
+        if (n == 0) return 0; 
         if (c == '\n') break;
         buf[i++] = c;
     }
